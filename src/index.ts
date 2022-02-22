@@ -1,8 +1,6 @@
-import { createRequire } from 'module';
-import { ModuleItem, StringLiteral, NamedImportSpecifier } from '@swc/core';
+import path from 'path';
+import { ModuleItem, StringLiteral, ImportDefaultSpecifier } from '@swc/core';
 import { Visitor } from '@swc/core/Visitor';
-
-const require = createRequire(import.meta.url);
 
 export interface TransformCtx {
   source: string;
@@ -25,21 +23,68 @@ function toArray<T>(data: T | T[]): T[] {
   return Array.isArray(data) ? data : [data];
 }
 
-function transCamel(str: string, symbol?: string) {
-  if (!symbol) {
-    return str;
-  }
-  str = str[0].toLowerCase() + str.substr(1);
+function transCamel(str: string, symbol: string) {
+  str = str[0].toLowerCase() + str.substring(1);
   return str.replace(/([A-Z])/g, $1 => `${symbol}${$1.toLowerCase()}`);
+}
+
+function getTransform(config: Config): Transform {
+  if (
+    typeof config.transform === 'string' &&
+    config.transform.endsWith('.js') &&
+    !config.transform.includes('[')
+  ) {
+    const absolutePath = path.resolve(process.cwd(), config.transform);
+    return require(absolutePath);
+  }
+
+  return config.transform;
+}
+
+function runTransform(
+  config: Config,
+  transform: Transform,
+  ctx: TransformCtx
+): string[] {
+  return toArray(typeof transform === 'function' ? transform(ctx) : transform)
+    .map(pattern => {
+      if (!pattern) {
+        return undefined;
+      }
+      return pattern.replace(
+        /\[(.+?)(?::(.+?))?\]/g,
+        (_, key: keyof TransformCtx, symbol?: string) => {
+          if (!(key in ctx)) {
+            throw new Error(
+              `[swc-plugin-import-transformer] Unexpected key \`${key}\` in \`${pattern}\``
+            );
+          }
+          return symbol ? transCamel(ctx[key], symbol) : ctx[key];
+        }
+      );
+    })
+    .filter((x): x is string => !!x);
 }
 
 export class ImportTransformer extends Visitor {
   private configMap: Record<string, Config>;
 
-  constructor(configMap: Record<string, Config>) {
+  constructor(userConfigMap: Record<string, Transform | Config>) {
     super();
 
-    this.configMap = configMap;
+    this.configMap = Object.keys(userConfigMap).reduce<Record<string, Config>>(
+      (res, key) => {
+        const userConfig = userConfigMap[key];
+        res[key] =
+          typeof userConfig === 'string' ||
+          typeof userConfig === 'function' ||
+          Array.isArray(userConfig)
+            ? { transform: userConfig }
+            : userConfig;
+        return res;
+      },
+      {}
+    );
   }
 
   visitModuleItems(items: ModuleItem[]): ModuleItem[] {
@@ -59,7 +104,7 @@ export class ImportTransformer extends Visitor {
         continue;
       }
 
-      const transform = this.getTransform(config);
+      const transform = getTransform(config);
 
       for (const specifier of specifiers) {
         if (specifier.type !== 'ImportSpecifier') {
@@ -69,57 +114,38 @@ export class ImportTransformer extends Visitor {
 
         const name = specifier.local.value;
 
-        this.runTransform(config, transform, {
+        runTransform(config, transform, {
           source: source.value,
           name,
-        }).map(transformed => {
+        }).map((transformed, index) => {
           const newSource: StringLiteral = {
             ...item.source,
             value: transformed,
           };
-          const newSpecifier: NamedImportSpecifier = { ...specifier };
 
-          newItems.push({
-            ...item,
-            source: newSource,
-            specifiers: [newSpecifier],
-          });
+          if (index === 0) {
+            const newSpecifier: ImportDefaultSpecifier = {
+              ...specifier,
+              type: 'ImportDefaultSpecifier',
+            };
+
+            newItems.push({
+              ...item,
+              source: newSource,
+              specifiers: [newSpecifier],
+            });
+          } else {
+            newItems.push({
+              ...item,
+              source: newSource,
+              specifiers: [],
+            });
+          }
         });
       }
     }
 
     return newItems;
-  }
-
-  getTransform(config: Config): Transform {
-    if (
-      typeof config.transform === 'string' &&
-      config.transform.endsWith('.js') &&
-      !config.transform.includes('[')
-    ) {
-      return require(config.transform);
-    }
-
-    return config.transform;
-  }
-
-  runTransform(
-    config: Config,
-    transform: Transform,
-    ctx: TransformCtx
-  ): string[] {
-    return toArray(typeof transform === 'function' ? transform(ctx) : transform)
-      .map(pattern => {
-        if (!pattern) {
-          return undefined;
-        }
-        return pattern.replace(
-          /\[(.+?)(?::(.+?))?\]/g,
-          (m, key: keyof TransformCtx, symbol?: string) =>
-            (symbol ? transCamel(ctx[key], symbol) : ctx[key]) || m
-        );
-      })
-      .filter((x): x is string => !!x);
   }
 }
 
