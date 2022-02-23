@@ -91,7 +91,7 @@ export class ImportTransformer extends Visitor {
     const newItems: ModuleItem[] = [];
 
     for (const item of items) {
-      if (item.type !== 'ImportDeclaration') {
+      if (item.type !== 'ImportDeclaration' || item.typeOnly) {
         newItems.push(item);
         continue;
       }

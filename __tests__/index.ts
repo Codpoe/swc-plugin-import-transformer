@@ -130,7 +130,7 @@ test('custom transform function return falsy value', () => {
   expect(code).toBe(`import Button from 'antd/es/button';\n`);
 });
 
-test('keep items that are not ImportDeclaration', () => {
+test('skip items that are not ImportDeclaration', () => {
   const { code } = swc.transformSync(
     `import { debounce } from 'lodash'
   console.log('Hello World')`,
@@ -147,7 +147,30 @@ console.log('Hello World');
 `);
 });
 
-test('keep items that are not NamedImport', () => {
+test('skip items that are import type', () => {
+  const { code } = swc.transformSync(
+    `import { debounce } from 'lodash';
+  import type { DebounceSettings } from 'lodash';
+  debounce();`,
+    {
+      jsc: {
+        parser: {
+          syntax: 'typescript',
+        },
+      },
+      plugin: m =>
+        new ImportTransformer({
+          lodash: 'lodash/[name]',
+        }).visitProgram(m),
+    }
+  );
+
+  expect(code).toBe(`import debounce from 'lodash/debounce';
+debounce();
+`);
+});
+
+test('skip items that are not NamedImport', () => {
   const { code } = swc.transformSync(`import _ from 'lodash'`, {
     plugin: m =>
       new ImportTransformer({
@@ -158,7 +181,7 @@ test('keep items that are not NamedImport', () => {
   expect(code).toBe(`import _ from 'lodash';\n`);
 });
 
-test('keep items that are not configured', () => {
+test('skip items that are not configured', () => {
   const { code } = swc.transformSync(
     `import { debounce } from 'lodash'
     import { throttle } from 'lodash'
